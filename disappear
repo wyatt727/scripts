@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+
+# CODED BY WYATT BECKER
+
+# IMPORTS
+import os
+import argparse
+import subprocess
+import time
+import sys
+from randmac import RandMac
+from random_words import RandomNicknames
+from requests import get
+
+# HELP MENU
+#------------------------------
+parser = argparse.ArgumentParser(description='''All in one tool to make you disappear''')
+# Optional Arguments
+parser.add_argument('-H', '--host', action='store', dest='host',
+                    help='specify your new hostname',type=str)
+parser.add_argument('-M', '--mac', action='store', dest='mac',
+                    help='specify your new MAC address.',type=str)
+parser.add_argument('--list', action='store_true', dest='list',
+                    help='displays your info and exits')
+parser.add_argument('--tor', action='store_true', dest='tor',
+                    help='''routes all traffic through tor. performace degredation likely
+                    (LINUX ONLY)''')
+parser.add_argument('--only', action='store_true', dest='only_flag',
+                    help='''use in conjuction with another variable.
+                    (option to use "RANDOM" as your value)''')
+# Mandatory Arguments
+requiredArgument = parser.add_argument_group('required arguments')
+requiredArgument.add_argument('-i', '--interface', action='store', dest='interface',
+                    help='input your desired interface to spoof on',type=str)
+results = parser.parse_args()
+
+# Make sure it's running as root
+id=os.getuid()
+if not id == 0:
+    print("THIS PROGRAM NEEDS TO BE RUN AS ROOT.")
+    print()
+    exit()
+
+# Checks that an interface is specified
+if not results.interface:
+    parser.print_help()
+    print()
+    print("PLEASE SPECIFY AN INTERFACE!")
+    print()
+    exit()
+
+#--------------------------
+# GET_INFO
+#-------------------------
+def get_info():
+    # greps for MAC
+    try:
+        mac=subprocess.check_output("ifconfig " + results.interface + " | grep ether | awk '{print $2}'",shell=True).decode('utf8')
+        mac=str(mac).rstrip()
+        # grabs hostname
+        hostname=subprocess.check_output("hostname",shell=True).decode('utf8')
+        hostname=str(hostname).rstrip()
+        # curl website for externalIP
+        externalIP = get('https://api.ipify.org').text
+
+        # return results
+        return mac, hostname, externalIP
+    except KeyboardInterrupt:
+        print('you quit....')
+        exit()
+    except:
+        print('fail')
+        time.sleep(5)
+        get_info()
+# Grabs MAC, hostname, and public IP for later comparisson
+macBefore,hostnameBefore,externalIP=get_info()
+#------------------
+# LIST_INFO
+#-------------------
+def list_info():
+    mac,hostname,externalIP=get_info()
+    print()
+    print("Hostname: " + str(hostname).rstrip())
+    print("MAC address: " + str(mac).rstrip())
+    print("Public IP: " + str(externalIP).rstrip())
+    print()
+#-------------------
+# CHANGE_HOSTNAME
+#-------------------
+def change_Hostname():
+    print("CHANGING YOUR HOSTNAME...")
+    time.sleep(1.5)
+    # set up random words for hostname
+    rn=RandomNicknames()
+    # Check for Linux
+    if not sys.platform.startswith('linux'):
+    # Change hostname with different commands depending on OS.
+        if results.host == 'RANDOM':
+            os.system("sudo scutil --set HostName '" + rn.random_nick(gender='m') +"."+ rn.random_nick(gender='f',letter='l') + ".local'")
+        elif str(results.host) != 'None':
+            os.system("sudo scutil --set HostName '" + results.host + "'")
+        else:
+            os.system("sudo scutil --set HostName '" + rn.random_nick(gender='m') +"."+ rn.random_nick(gender='f',letter='l') + ".local'")
+    else:
+        #Creating new hostname variable so it will match whats in /etc/hostname when it updates
+        tempHostname=str(rn.random_nick(gender='m') +"."+ rn.random_nick(gender='f',letter='l') + ".local").rstrip()
+        if results.host == 'RANDOM':
+            os.system("hostname " + tempHostname)
+            os.system("echo '" + tempHostname + "' > /etc/hostname")
+        elif str(results.host) != 'None':
+            os.system("hostname " + results.host)
+            os.system("echo '" + results.host + "' > /etc/hostname")
+        else:
+            os.system("hostname " + tempHostname)
+            os.system("echo '" + tempHostname + "' > /etc/hostname")
+
+#--------------------
+# SPOOF_MAC
+#--------------------
+def spoof_Mac():
+    print("SPOOFING YOUR MAC...")
+    time.sleep(1.5)
+    if not sys.platform.startswith('linux'):
+        if results.mac == 'RANDOM':
+            os.system('macspoof -i ' + results.interface + ' -m ' + str(RandMac("00:00:00:00:00:00", True)))
+        elif results.mac:
+            os.system('macspoof -i ' + results.interface + ' -m ' + results.mac)
+        else:
+            os.system('macspoof -i ' + results.interface + ' -m ' + str(RandMac("00:00:00:00:00:00", True)))
+    else:
+        if results.mac == 'RANDOM':
+            os.system('spoof-mac randomize ' + results.interface)
+        elif results.mac:
+            os.system('spoof-mac set ' + results.mac + results.interface)
+        else:
+            os.system('spoof-mac randomize ' + results.interface)
+#--------------------
+# ANONYMIZE
+#--------------------
+def anonymize():
+    print("ROUTING ALL TRAFFIC THROUGH TOR...")
+    time.sleep(1)
+    print()
+    os.system("anonsurf start")
+#---------------------
+# DISPLAY_CHANGES
+#----------------------
+def display_Changes():
+    macAfter,hostnameAfter,externalIPAfter=get_info()
+    print('-----------------------------------')
+    print('old hostname: ' + hostnameBefore)
+    print('new hostname: ' + hostnameAfter)
+    print('-----------------------------------')
+    print()
+    print('-----------------------------------')
+    print('old MAC: ' + macBefore)
+    print('new MAC: ' + macAfter)
+    print('-----------------------------------')
+    print()
+    print('-----------------------------------')
+    print('old public IP: ' + externalIP)
+    print('new public IP: ' + externalIPAfter)
+    print('-----------------------------------')
+#---------------------
+# MAIN
+#---------------------
+def main():
+# Check for --list flag
+    if results.list:
+        list_info()
+        exit()
+
+# Checks for --only flag
+    if results.only_flag:
+        if results.only_flag and results.mac:
+            spoof_Mac()
+        if results.only_flag and results.host:
+            change_Hostname()
+        if results.only_flag and results.tor:
+            anonymize()
+        display_Changes()
+        exit()
+# Change MAC, Hostname, IP, and Display Results
+    change_Hostname()
+    spoof_Mac()
+    if results.tor:
+        anonymize()
+    time.sleep(3)
+    display_Changes()
+# Call Main Function
+main()

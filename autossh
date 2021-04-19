@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+# coded by: WYATT BECKER
+from pexpect import pxssh
+import getpass
+import argparse
+from rich.console import Console as console
+parser = argparse.ArgumentParser(description='''auto ssh command''')
+# Optional Arguments
+parser.add_argument('-t', '--target', action='store', dest='target',
+                    help='specify the target hostname or IP',type=str)
+parser.add_argument('-u', '--username', action='store', dest='username',
+                    help='specify your username',type=str)
+parser.add_argument('-p', '--password', action='store', dest='passwd',
+                    help='specify the password (insecure)',type=str)
+parser.add_argument('-c', '--command', action='store', dest='command',
+                    help='specify your command',type=str)
+parser.add_argument('-i', '--interact', action='store_true', dest='interact',
+                    help='Interact with the shell after command execution')
+results = parser.parse_args()
+
+try:
+    s = pxssh.pxssh()
+    if not results.target:
+        hostname = input('hostname: ')
+    else:
+        hostname = results.target
+    if not results.username:
+        username = input('username: ')
+    else:
+        username = results.username
+    if not results.passwd:
+        password = getpass.getpass('password: ')
+    else:
+        password=results.passwd
+    if not results.command:
+        command = input("command: ")
+    else:
+        command = results.command
+    s.login(hostname, username, password)
+    s.sendline(command)   # run a command
+    s.prompt()
+    print(s.before)        # print everything before the prompt.
+    if results.interact:
+        s.interact()
+    s.logout()
+except pxssh.ExceptionPxssh as e:
+    print("pxssh failed on login.")
+    print(e)
