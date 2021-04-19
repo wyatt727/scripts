@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+#Created By: WYATT BECKER
+import os
+from time import sleep
+import argparse
+import subprocess
+
+parser = argparse.ArgumentParser(description='''Parse Eyewitness Files''')
+parser.add_argument('-d', action='store', dest='directory',
+                    help="input path/to/eyewitness/dir")
+results = parser.parse_args()
+inputt=results.directory
+inputt=str(inputt)
+if not inputt[-1] == "/":
+	inputt=str(inputt)+"/"
+os.system("cat "+inputt+"report* |grep -i 'page title:' |cut -d '>' -f 4 |sort -u > " + inputt + "page_titles.txt")
+cmd=subprocess.check_output("4loop \"echo LINE:  && cat "+inputt+"report* |grep -i 'LINE' -B 2 |sort -u |cut -d '/' -f 3|cut -d '\\\"' -f 1 |grep -v '\\-' |grep '\\S' && echo && echo\" "+inputt+"page_titles.txt |grep -v '>' |tee "+inputt+"eyereport.txt", shell=True).decode('utf-8')
+print(cmd)
+print("File created: " + inputt+"eyereport.txt")
+print()

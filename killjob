@@ -1,0 +1,20 @@
+#!/bin/sh
+# Quick program WYATT BECKER whipped up to grep for and kill a process by a given name
+if [ $1 ]
+then
+  processes=$(ps -ef | grep $1 | grep -v grep | awk '{print $2}' | wc -l | tr -d '[:space:]')
+  if (($processes > 3))
+  then
+    read -p "Are you sure you want to kill $processes jobs? (Y/N): " lastchance
+    if [ $lastchance == 'Y' ]
+    then
+        ps -ef | grep $1 | grep -v grep | awk '{print $2}' | xargs kill
+    fi
+  else
+    ps -ef | grep $1 | grep -v grep | awk '{print $2}' | xargs kill
+  fi
+else
+  echo "SYNTAX: killjob <process name>"
+fi
+exit
+

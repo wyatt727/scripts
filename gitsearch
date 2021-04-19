@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+# Coded by: WYATT BECKER
+import os
+import argparse
+import sys
+from urllib.request import urlopen
+from bs4 import BeautifulSoup
+
+parser = argparse.ArgumentParser(description='Query Github for repositories')
+parser.add_argument('-q, --query',action='store',dest='query',help='github search query')
+parser.add_argument('-p, --pages',action='store',dest='pages',help='how many pages to scrap')
+results, unknown = parser.parse_known_args()
+
+if not results.query:
+    try:
+        results.query=sys.argv[1] # if arg specified without the -q switch
+    except: # if no query specified
+        parser.print_help()
+        print()
+        print('PLEASE SPECIFY A QUERY')
+        print()
+        exit()
+if not results.pages:
+    pages=1
+else:
+    pages=int(results.pages)
+
+i=1
+while int(i) <= pages:
+    url='https://github.com/search?p=' + str(i) + '&q='+results.query
+    i+=1
+    url=str(url)
+    website=urlopen(url)
+    soup = BeautifulSoup(website, 'html.parser')
+    oldstdout=sys.stdout #to be able to return to original stdout after printing to files.
+    a=open("tmpass.txt", 'w+')
+    b=open("tmpps.txt", 'w+')
+    sys.stdout = a
+    print(soup.find_all('a', class_="v-align-middle")) #write to tmpass.txt
+    sys.stdout = b
+    print(soup.find_all('p', class_='mb-1')) #write to tmpps.txt
+    sys.stdout = oldstdout
+    a.close()
+    b.close()
+    os.system("cat tmpass.txt |tr ',' '\n' |grep url |cut -d '\"' -f 4 |grep -v 'q=' > tmp && mv tmp tmpass.txt")
+    os.system("cat tmpps.txt |sed 's/<em>//g' |sed 's/<\/em>//g' |grep -v '<' |sed 's/    //g' > tmp && mv tmp tmpps.txt")
+    a=open("tmpass.txt")
+    b=open("tmpps.txt")
+
+    for line in a:
+        print()
+        print('-----------------------------------------------------')
+        os.system("echo '" + line + "'| awk -F'/' '{print $NF}'")
+        print('-----------------------------------------------------')
+        print(b.readline())
+        print(line)
+
+    a.close()
+    b.close()
+    os.system('rm tmpass.txt tmpps.txt')

