@@ -10,6 +10,7 @@ import os
 import argparse
 from time import sleep
 import subprocess
+import sys
 parser = argparse.ArgumentParser(description='''NMAP Wrapper and More for a Quick Start to My Engagements''')
 parser.add_argument('-i', action='store', dest='input',
                     help="input either a path/to/filename, IP, or Subnet")
@@ -35,6 +36,8 @@ parser.add_argument('--initdb', action='store_true', dest='initdb',
                     help="Initialize CME database")
 parser.add_argument('--spray', action='store_true', dest='spray',
                     help="Spray cutomized passwords over SMB for local admin.")
+parser.add_argument('--rmi', action='store_true', dest='rmi',
+                    help="Enumerate all java-rmi services for vulns.")
 results = parser.parse_args()
 # Check for input argument
 if not results.input:
@@ -75,13 +78,13 @@ def pingSweep():
     if file_check(write_file) == False: #If file existence comes back as negative/user wants to overwrite:
         writeout=" -oG " + write_file
         if scope_file==results.input: #  if scope_file != "", we know it's a file being used
-            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms  -iL " + scope_file + writeout )
+            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  -iL " + scope_file + writeout )
             print()
-            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -iL " + scope_file + writeout)
+            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms -iL " + scope_file + writeout)
         else: #else assume it's the raw ips/subnets we're dealing with
-            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms " + scope + writeout)
+            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + scope + writeout)
             print()
-            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms " + scope + writeout)
+            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + scope + writeout)
         print()
         if not results.dryrun:
             print("File created: " + write_file) #Nmap output
@@ -141,13 +144,13 @@ def portScan():
                 else:
                     inputt=results.input
         if os.path.exists(inputt):
-            print("Command: nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms  -iL " + inputt + writeout)
+            print("Command: nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  -iL " + inputt + writeout)
             print()
-            os.system("nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms  -iL " + inputt + writeout)
+            os.system("nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  -iL " + inputt + writeout)
         else: #else assume it's the raw ips/subnets we're dealing with
-            print("Command: nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms  " + inputt + writeout)
+            print("Command: nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  " + inputt + writeout)
             print()
-            os.system("nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms " + inputt + writeout)
+            os.system("nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + inputt + writeout)
             if not results.dryrun:
                 print()
                 print("File creaded: "+results.output+"-portscan.gnmap")
@@ -187,22 +190,20 @@ def serviceScan():
         if not results.dryrun:
             writeout=" -oG " + results.output+"-servicescan.gnmap -oN "+write_file
         if os.path.exists("parser/ports/"):
-            print("'parser/ports/' directory found...")
-            sleep(1)
-            
+            print("parser/ports/' directory found...")
+            sleep(1)            
             port_question=input("Do you want to limit the ports scanned to only those with the 'parser/ports/' directory (y/N): ")
-            if port_question.lower()=="y":
-                print()
-                print("ADD THIS SECTION LATER WYATT. Won't be hard...")
-                print()
-                sleep(1)
-
+            if port_question.lower()=="y": # if y: ls ports dir, format, and add to command.
+                servicePorts=subprocess.check_output("ls -la parser/ports/ |awk '{print $9}' |tail +4 |sed 's/.txt/,/g' |tr '\\n' ',' |sed 's/,,/,/g' | rev | cut -c2- | rev",shell=True).decode('utf-8').rstrip()
+                servicePorts=' -p'+servicePorts.rstrip()
+            else:
+                servicePorts=""
         if os.path.exists(inputt):
-            print("Command: nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -iL " + inputt + writeout)
-            os.system("nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms -iL " + inputt + writeout)
+            print("Command: nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms -iL " + inputt + writeout + servicePorts)
+            os.system("nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms -iL " + inputt + writeout + servicePorts)
         else: #else assume it's the raw ips/subnets we're dealing with
-            print("Command: nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms " + writeout)
-            os.system("nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 256 --max-rtt-timeout 150ms " + inputt + writeout)
+            print("Command: nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + writeout + servicePorts)
+            os.system("nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + inputt + writeout + servicePorts)
         if not results.dryrun:
             print()
             print("File creaded: "+results.output+"-servicescan.gnmap")
@@ -211,11 +212,6 @@ def serviceScan():
             sleep(1)
     else:
         pass
-#
-# post parse service scan - TODO
-#
-#def quick_service(writeout, inputt):
-#    if 
 
 #
 # --parse
@@ -255,6 +251,7 @@ def parse(): # Parses through output of gnmap files and organizes into port fold
             os.system("mv parser/ports/" + fullname.rstrip() + " parser/ports/" + newname.rstrip())
         fullnames.close()
         partials.close()
+        os.system('rm tmp-*names.txt')
         # Make host files containing all ports specific to each host.
         if os.path.exists("parser/ports"):
             os.system("mkdir parser/hosts 2>/dev/null")
@@ -292,6 +289,9 @@ def file_check(write_file): # Checks if file exists; gives option to overwrite o
     else:
         return False
 
+#
+# eyewitness()
+#
 def eyewitness():
     print()
     print(" ----------------------------")
@@ -330,7 +330,7 @@ def eyewitness():
                     os.system('cat parser/ports/8080.txt >> tmp')
                 try:
                     os.system('cat tmp |sort -u > eyewitness-hosts.txt && rm tmp')
-                    os.system('eyewitness --web -f eyewitness-hosts.txt --prepend-https -d eyewitness --results 50 --no-prompt --only-ports 80,443,8080')
+                    os.system('eyewitness --web -f eyewitness-hosts.txt --prepend-https -d eyewitness --results 100 --no-prompt --only-ports 80,443,8080')
                 except:
                     print("Something went wrong...")
                     sleep(1)
@@ -440,6 +440,47 @@ def SMBspray():
     os.system("cme smb smb-hosts.txt -u Administrator -p client-wordlist.txt --local-auth")
 
 #
+#   RMIenum()
+#
+def RMIenum():
+    print()
+    print(" ---------------------")
+    print("| Java-RMI Enumeration|")
+    print(" ---------------------")
+    print()
+    sleep(1)
+    document=results.output.rstrip()+"-servicescan.txt"
+    if os.path.exists(document):
+        print("Compiling list of hosts running java-rmi..")
+        sleep(1) 
+        os.system('cat '+str(document)+'|grep "java-rmi\\| for " |grep java-rmi -B1 |awk \'{print $1,$5}\'|sed \'s/Nmap //g\' |cut -d " " -f1 |sed \'s/\\/tcp//g\' |sed \'s/--//g\' |grep "\\S" > tmp')
+        f=open("rmi-hosts.txt","w")
+        with open("tmp") as a:
+            for line in a:
+                if "." in line: # if "." in the line, assume it's an ip
+                    host=line
+                else: # else assume it's the last hosts ports
+                    f.write(str(host.rstrip())+" "+str(line))
+        os.system("rm tmp 2>/dev/null")
+        f.close()
+        print("File created: rmi-hosts.txt")
+        print()
+        sleep(1)
+        prompt=input("Do you want to continue with an RMG scan? (Y/n)")
+        if not prompt.lower()=="n":
+            os.system("rm rmg-scan.txt 2>/dev/null")
+            with open("rmi-hosts.txt") as f:
+                for line in f: # Using echo instead of print to avoid issues writing to same file as the |tee command is
+                    os.system("echo '************************' |tee -a rmg-scan.txt")
+                    os.system("echo "+line.rstrip()+"|tee -a rmg-scan.txt")
+                    os.system("echo '************************' |tee -a rmg-scan.txt")
+                    os.system("timeout --foreground 2 java -jar /usr/local/bin/rmg.jar enum " + str(line).rstrip() + " |tee -a rmg-scan.txt")
+    else:
+        print("The "+document+" file is needed for parsing")
+        print()
+        sleep(1)
+
+#
 # main()
 #
 def main():
@@ -458,10 +499,12 @@ def main():
     elif results.spray:
         q=input("Do you want to first initialize the CME database? (y/N): ")
         if q.lower() == "y":
-                initDB(name)
+            initDB(name)
         else:
-                pass
+            pass
     if results.spray:
         SMBspray()
+    if results.rmi:
+        RMIenum()
 
 main()

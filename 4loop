@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
-#CODED BY WYATT BECKER
-#-------------------------------------------------------------------------------
+# Coded by: Wyatt Becker - https://www.bulletproofsi.com
+#---------------------------------------------------------------------------------
 # In this example, test.txt contains the numbers 1-5 each seperated by a '\n'
-#-------------------------------------------------------------------------------
-# Usage with file:            # Usage with specified integer    # Usage with line count from file
-# 4loop 'echo LINE' test.txt    4loop 'echo hello world' 5        4loop 'echo foo' test.txt
-# output:                       output:                           output:
-# 1                             hello world                       foo
-# 2                             hello world                       foo
-# 3                             hello world                       foo
-# 4                             hello world                       foo
-# 5                             hello world                       foo
+#---------------------------------------------------------------------------------
+# Usage with file:            # Usage with specified integer    # Usage with line count from file    # Usage with piped input
+# 4loop 'echo LINE' test.txt    4loop 'echo hello world' 5        4loop 'echo foo' test.txt            seq 1-5 | 4loop 'echo -LINE-' INPUT
+# output:                       output:                           output:                              output:
+# 1                             hello world                       foo                                  -1-
+# 2                             hello world                       foo                                  -2-
+# 3                             hello world                       foo                                  -3-
+# 4                             hello world                       foo                                  -4-
+# 5                             hello world                       foo                                  -5-
 
-# This program is especially useful with scope files ;)
-# 4loop 'nmap LINE' scope.txt
+# Adding a number after the input variable adjusts the timeout between each command iteration (default: .075)
+# 4loop 'echo LINE' file.txt .33
 
-# TODO: Switch sys.argv[1] and sys.argv[2] around to permit some commands without ''
+# This program is especially useful with parsed port files
+# 4loop 'showmount -e LINE' port-2049.txt
+
+# TODO: Rewrite to clean up all the sloppy coding (add argparse options?).
 
 import sys
 import os
 from time import sleep
 
 def print_help():
-    print("SYNTAX: 4loop '[command]' [iterations or filename]")
+    print("SYNTAX: 4loop '[command]' [iterations or filename] [optional: timeout]")
     print("Use 'LINE' as variable for line in file")
     print()
     exit()
@@ -30,36 +33,71 @@ def print_help():
 try: # Try to set global variables
     command=str(sys.argv[1])    # String we'll use as the command to execute
     iterations=sys.argv[2]      # how many repeats
+    try:
+        timeout=float(sys.argv[3]) # allow for timeout to be specified as 3rd argument
+    except:
+        timeout=.075
+        pass
 except:
     print_help()
 
-# Checks if arg2 is a file or not and choosees iterations accordingly
 def looper(command,iterations):
     if not iterations.isdigit():# if it's not a digit assume its string
         iterations=str(iterations)
-        if os.path.exists(iterations): # Check if filename exists
+        if iterations=="INPUT": # If the 2nd argument == "INPUT"
+            piped_input = sys.stdin.readlines() # Read all the lines from piped input
+            if "LINE" in command: # Give option to use line in file rather than just iter count
+                for line in piped_input:
+                    try:
+                        new_cmd=command.replace("LINE",line.rstrip()) # Replace "LINE" with the line from file
+                        os.system(new_cmd)
+                        sleep(timeout) # Slowed down in order to break out of loop (needs fine tuning)
+                    except KeyboardInterrupt:
+                        return
+            else: # Else just do command as many times as there are lines in the piped input
+                for line in piped_input:
+                    try:
+                        os.system(line.rstrip())
+                        sleep(timeout)
+                    except KeyboardInterrupt:
+                        return
+        elif os.path.exists(iterations): # Check if filename exists
             file=iterations # So we can use iterations as a diff variable while keeping filename
             iterations = sum(1 for line in open(file)) # iters = number of lines in file
             if "LINE" in command: # Give option to use line in file rather than just iter count
-                    for line in open(file):
-                        try:
-                            new_cmd=command.replace("LINE", line.rstrip()) # Replace "LINE" with the line from filew
-                            os.system(new_cmd)
-                            sleep(.031) #slowed down in order to break out of loop (needs fine tuning)
-                        except KeyboardInterrupt:
-                            return
+                for line in open(file):
+                    try:
+                        new_cmd=command.replace("LINE", line.rstrip()) # Replace "LINE" with the line from file
+                        os.system(new_cmd)
+                        sleep(timeout) #slowed down in order to break out of loop (needs fine tuning)
+                    except KeyboardInterrupt:
+                         return
             else: # Else just do command as many times as there are lines in the specified file.
                 for i in range(0,iterations):
                     os.system(command)
+                    sleep(timeout)
         else:
             print()
             print("You entered a filename that doesn't exist...")
             print()
-            sleep(1) # Asthetics
+            sleep(1)
             print_help()
-    else: # Else do command as many times as the specified int
+    else: # Else do command as many times as the specified int but replace LINE with piped input if possible
         iterations=int(iterations)
-        for i in range(0,iterations):
-            os.system(command)
-
+        if "LINE" in command:
+            piped_input=sys.stdin.readlines()
+            try:
+                for i in range(0,iterations):
+                    new_cmd=command.replace("LINE", piped_input[i].rstrip()) # Replace "LINE" with the piped_input line
+                    os.system(new_cmd)
+                    sleep(timeout) # Slowed down in order to break out of loop (needs fine tuning)
+            except KeyboardInterrupt:
+                return      
+        else:
+            try:
+                for i in range(0,iterations):
+                    os.system(command)
+                    sleep(timeout)
+            except KeyboardInterrupt:
+                return
 looper(command,iterations)
