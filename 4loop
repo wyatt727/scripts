@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+
+# Coded by: WYATT BECKER
+# Please ignore the sloppy coding. This started out as a simple nmap wrapper. 
+
+# TODO: Add check for parsed port files during service scan to limit port-scope and speed up scanning.
+# TODO: Add gobuster option that uses all of the http ports found from the nmap-servicescan.txt files 
+
+import os
+import argparse
+from time import sleep
+import subprocess
+import sys
+import re
+
+parser = argparse.ArgumentParser(description='''NMAP Wrapper and More for a Quick Start to My Engagements''')
+parser.add_argument('-i', action='store', dest='input',
+                    help="input either a path/to/filename, IP, or Subnet")
+parser.add_argument('-o', action='store', dest='output',
+                    help="output file name (don't include extension)")
+parser.add_argument('-options', action='store', dest='options', # bug: "" and \ needed to work
+                    help="add extra options to scans")                  # Example: -options "\-p-"
+parser.add_argument('--alive', action='store_true', dest='alive',
+                    help="Flag to find alive hosts")
+parser.add_argument('--quick', action='store_true', dest='quickscan',
+                    help="Perform a quick port scan ")
+parser.add_argument('--service', action='store_true', dest='servicescan',
+                    help="Perform a service scan")
+parser.add_argument('--parse', action='store_true', dest='parse',
+                    help="Parse through nmap results")
+parser.add_argument('--no-pn', action='store_true', dest='nopn',
+                    help="Disables option to assume all hosts are alive")
+parser.add_argument('--dry-run', action='store_true', dest='dryrun',
+                    help="Don't save results to a file")
+parser.add_argument('--eyewitness', action='store_true', dest='eyewitness',
+                    help="Run eyewitness using nmap results")
+parser.add_argument('--initdb', action='store_true', dest='initdb',
+                    help="Initialize CME database")
+parser.add_argument('--spray', action='store_true', dest='spray',
+                    help="Spray cutomized passwords over SMB for local admin.")
+parser.add_argument('--rmi', action='store_true', dest='rmi',
+                    help="Enumerate all java-rmi services for vulns.")
+parser.add_argument('--nfs', action='store_true', dest='nfs',
+                    help="Enumerate NFS shares (mounts world readable.)")
+results = parser.parse_args()
+# Check for input argument
+if not results.input:
+    parser.print_help() # show helpmenu/syntax
+    print()
+    print("PLEASE USE THE '-i' ARGUMENT.. ")
+    print()
+    exit()
+# Initialize variables
+if not results.options:
+    results.options=""
+scope_file=""  # If has value, use -iL in initial nmap
+scope=""       # if has value, use raw input in initial nmap
+write_file=""  # Will be a path sent to file_check() to check if path/file exists
+inputt=results.input # troubleshooting
+writeout=""    # Values will be added to this if --dry-run not specified
+# If path to input exists then classify it as a file
+# Else classify it as raw input (single IP or Subnet)
+if os.path.exists(results.input):
+    scope_file=results.input
+else:
+    scope=results.input
+# Default to output name of "nmap" if none specified
+if not results.output:
+    results.output="nmap"
+pn="-Pn"    # allows for option to turn off -Pn switch
+if results.nopn:
+    pn=""
+#
+# --alive
+#
+def pingSweep():
+    print()
+    print(" ---------------------- ")
+    print("| PERFORMING PINGSWEEP |")
+    print(" ----------------------")
+    write_file=results.output.rstrip() + "-alive.gnmap" # The file we send to file_check function
+    if file_check(write_file) == False: #If file existence comes back as negative/user wants to overwrite:
+        writeout=" -oG " + write_file
+        if scope_file==results.input: #  if scope_file != "", we know it's a file being used
+            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  -iL " + scope_file + writeout )
+            print()
+            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms -iL " + scope_file + writeout)
+        else: #else assume it's the raw ips/subnets we're dealing with
+            print("Command: nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + scope + writeout)
+            print()
+            os.system("nmap -sn -n -T4 --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + scope + writeout)
+        print()
+        if not results.dryrun:
+            print("File created: " + write_file) #Nmap output
+            sleep(1)
+            print()
+        # Clean the nmap file to only include the IPs and output to new file
+        print("ALIVE HOSTS:") # list alive hosts while writing to file
+        sleep(1)
+        if not results.dryrun:
+            writeout="|tee alive.txt"
+        else:
+            writeout=""
+        os.system("cat " + write_file + " |awk {'print $2'} |grep -v Nmap " + writeout)
+        host_count=subprocess.check_output('cat alive.txt |wc -l |sed "s/ //g"',shell=True).decode("utf-8")
+        sleep(1)
+        print()
+        print('Host count: '+host_count)
+        sleep(1)
+        if not results.dryrun:
+            print("File created: alive.txt") # Only the IPs from the gnmap file
+            sleep(1)
+        else:
+            os.system("rm " + results.output.rstrip() + "-alive.gnmap")
+    else:
+        pass
+#
+# --quick
+#
+def portScan():
+    print()
+    print(" ----------------------------")
+    print("| PERFORMING QUICK PORT SCAN |")
+    print(" ----------------------------")
+    write_file=results.output.rstrip()+"-portscan.txt"
+    if file_check(write_file) == False:
+        writeout=""
+        if not results.dryrun:
+            writeout=" -oG " + results.output+"-portscan.gnmap -oN "+write_file
+        inputt=results.input
+        if not os.path.exists("alive.txt"):
+            if not results.input == "alive.txt":  # so we don't use full scope when alive.txt is an option
+                pingsweepQ=input("alive.txt is MISSING, would you like to first perform a ping sweep? (y/N): ")
+                print()
+                if not pingsweepQ.lower()=="y":
+                    print() # if pingsweep is unwanted, use specified scope
+                    print("Using " + results.input + " as input...")
+                    sleep(1)
+                    print()
+                else:
+                    pingSweep() # perform pingsweep and rerun program.
+                    main()
+        else:
+            if not results.input=="alive.txt":
+                aliveQ=input("alive.txt was FOUND, would you like to use that instead of " + results.input + " (y/N): ")
+                print()
+                if aliveQ.lower() == "y":
+                    inputt='alive.txt'
+                else:
+                    inputt=results.input
+        if os.path.exists(inputt):
+            print("Command: nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  -iL " + inputt + writeout)
+            print()
+            os.system("nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  -iL " + inputt + writeout)
+        else: #else assume it's the raw ips/subnets we're dealing with
+            print("Command: nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms  " + inputt + writeout)
+            print()
+            os.system("nmap "+pn+" -n -T4 " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + inputt + writeout)
+            if not results.dryrun:
+                print()
+                print("File creaded: "+results.output+"-portscan.gnmap")
+                print("File creaded: "+write_file)
+                print()
+                sleep(2)
+    else:
+        pass
+#
+# --service
+#
+def serviceScan():
+    print()
+    print(" -------------------------")
+    print("| PERFORMING SERVICE SCAN |")
+    print(" -------------------------")
+    inputt=results.input
+    write_file=results.output.rstrip()+"-servicescan.txt"
+    if file_check(write_file) == False:
+        if not os.path.exists("alive.txt"):
+            pingsweepQ=input("alive.txt is MISSING, would you like to first perform a ping sweep? (y/N): ")
+            if not pingsweepQ.lower()=="y":
+                print()
+                print("Using " + results.input + " as input...")
+                sleep(1)
+                print()
+            else:
+                pingSweep()
+                main()
+        elif not results.input=="alive.txt" and os.path.exists("alive.txt"):
+            aliveQ=input("alive.txt was FOUND, would you like to use that instead of " + results.input + " (y/N): ")
+            if aliveQ.lower()=='y':
+                inputt="alive.txt"
+            else:
+                inputt=results.input
+        writeout=""
+        if not results.dryrun:
+            writeout=" -oG " + results.output+"-servicescan.gnmap -oN "+write_file
+        if os.path.exists("parser/ports/"):
+            print("parser/ports/' directory found...")
+            sleep(1)            
+            port_question=input("Do you want to limit the ports scanned to only those with the 'parser/ports/' directory (y/N): ")
+            if port_question.lower()=="y": # if y: ls ports dir, format, and add to command.
+                servicePorts=subprocess.check_output("ls -la parser/ports/ |awk '{print $9}' |tail +4 |sed 's/.txt/,/g' |tr '\\n' ',' |sed 's/,,/,/g' | rev | cut -c2- | rev",shell=True).decode('utf-8').rstrip()
+                servicePorts=' --open -p'+servicePorts.rstrip()
+            else:
+                servicePorts=""
+        else:
+            servicePorts=""
+        if os.path.exists(inputt):
+            print()
+            print("Command: nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms -iL " + inputt + writeout + servicePorts)
+            print()
+            os.system("nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms -iL " + inputt + writeout + servicePorts)
+        else: #else assume it's the raw ips/subnets we're dealing with
+            print()
+            print("Command: nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + writeout + servicePorts)
+            print()
+            os.system("nmap "+pn+" -n -T4 -sV " + results.options + " --min-parallelism 100 --max-parallelism 250 --max-rtt-timeout 150ms " + inputt + writeout + servicePorts)
+        if not results.dryrun:
+            print()
+            print("File creaded: "+results.output+"-servicescan.gnmap")
+            print("File creaded: "+write_file)
+            print()
+            sleep(1)
+    else:
+        pass
+
+#
+# --parse
+#
+def parse(): # Parses through output of gnmap files and organizes into port folders
+    print()
+    print(" ------------------------------")
+    print("| PARSING THROUGH NMAP RESULTS |")
+    print(" ------------------------------")
+    if results.dryrun:
+        print()
+        print("Cannot parse with --dry-run")
+        sleep(2)
+        serviceScan()
+        exit()
+    write_file="parser"
+    if file_check(write_file) == False: # If no file or overwrite wanted
+        os.system("gnmap-parser.sh -p")
+        sleep(1)
+        print("Done Parsing!")
+        print()
+        os.system("rm -rf parser")
+        os.system("mv Gnmap-Parser/ parser") # rename 
+        os.system('rm -rf parser/Port-Lists  parser/Port-Matrix parser/Host-Lists') 
+        print("Directory created: parser")
+        os.system("mv parser/Port-Files parser/ports")      
+        sleep(1)
+        print("Directory created: parser/ports")
+        sleep(1)
+        # start changing all file names for convenience - I'm sure there's a quicker way but whatever
+        os.system("ls -l parser/ports/ |awk '{print $9}' |grep '\S' > tmp-fullnames.txt") #echo fullnames\n to file
+        os.system("cat tmp-fullnames.txt |cut -d '-' -f2,3 |sed 's/-TCP//g' > tmp-partialnames.txt")
+        fullnames=open("tmp-fullnames.txt")
+        partials=open("tmp-partialnames.txt")
+        for fullname in fullnames:
+            newname=partials.readline()
+            os.system("mv parser/ports/" + fullname.rstrip() + " parser/ports/" + newname.rstrip())
+        fullnames.close()
+        partials.close()
+        os.system('rm tmp-*names.txt')
+        # Make host files containing all ports specific to each host.
+        if os.path.exists("parser/ports"):
+            os.system("mkdir parser/hosts 2>/dev/null")
+            # 4loop is another of my custom script, will change to do this pythonicly or will add a 4loop function to this script later.
+            print()
+            print("Generating host files...")
+            sleep(1)
+            os.system("4loop \"grep -rl LINE parser/ports/* |cut -d '/' -f3 |sed 's/.txt//g' > ttmp && grep '\S' ttmp > parser/hosts/LINE\" alive.txt && rm ttmp")
+            with open("alive.txt") as f:
+                for line in f:
+                    print(line.rstrip()) 
+            sleep(1)
+            print("Directory created: parser/hosts/")
+    else:
+        pass
+#
+# file_check()
+#
+def file_check(write_file): # Checks if file exists; gives option to overwrite or skip
+    if os.path.exists(write_file):
+        if not results.dryrun:
+            print('WARNING: ' + write_file + " already exists.")
+            print()
+            overwrite=input("do you want to overwrite? (y/N): ")
+            if overwrite == "y" or overwrite == "Y":
+                print()
+                return False
+            else:
+                print()
+                print("Skipping Task...")
+                sleep(1)
+                return True
+        else:
+            return False
+    else:
+        return False
+
+#
+# --eyewitness
+#
+def eyewitness():
+    print()
+    print(" ----------------------------")
+    print("| PERFORMING EYEWITNESS SCAN |")
+    print(" ----------------------------")
+    print()
+    document=results.output.rstrip()+"-servicescan.txt"
+    port_list=[] # Used to put all http ports in a list which will later be joined with a ", "
+    ports="" # will be a string used in eyewitness command containing all the web-ports to try
+    if results.dryrun:
+        print('eyewitness cannot run with --dry-run flag')
+        return
+    write_file="eyewitness-hosts.txt"
+    if file_check(write_file)==False:
+        if not os.path.exists(document):
+            print(document+" does not exist.") # If service scan doesn't exist, Check for portscan file.
+            sleep(1)
+            document=(results.output.rstip()+"-portscan.txt")
+            print("Checking for " +document)
+            sleep(1)
+            if not os.path.exists(document):
+                print()
+                print("No files were found to parse") # If portscan file doesn't exit, 
+                sleep(1)
+                exit()
+        print("Parsing "+document+" for http(s) services")
+        os.system("cat "+document+"|grep -v 'SF:' |grep -vi fingerprint|grep -i ' for \\|http\\|ssl' |cut -d '/' -f 1 |awk '{print $1 $5}'|sed 's/Nmap//g' > ttmp")
+        # ^ Creates a list of IPs and port numbers with http in the service name
+        f=open('eyewitness-hosts.txt','w')
+        with open('ttmp') as a:
+            for line in a:
+                if '.' in line:
+                    host=line
+                else:
+                    if line.rstrip().isnumeric():
+                        port=line
+                        f.write(host.rstrip()+':'+port)
+                        #print(host.rstrip()+':'+port.rstrip())
+                    else:
+                        pass
+        f.close()
+        http_service_count=str(int(subprocess.check_output('cat eyewitness-hosts.txt |wc -l |sed "s/ //g"',shell=True).decode('utf-8'))*2) # x2 because we're prepending https as well
+        sleep(1)
+        print("File created: eyewitness-hosts.txt")
+        print()
+        sleep(1)
+        print("Potential HTTP(s) services found: " + str(http_service_count))
+        print()
+        sleep(1)
+        proceed=input("Do you want to proceed with the eyewitness scan (Y/n): ")
+        if not proceed.lower()=='n':
+            os.system('eyewitness --web -f eyewitness-hosts.txt --prepend-https -d eyewitness --results 100 --no-prompt')
+            print()
+            print("Directory created: eyewitness/")
+            print()
+            sleep(1)
+            print("Parsing report for server titles..,")
+            print()
+            sleep(1)
+            os.system('eyereporter -d eyewitness')
+            sleep(1)
+#
+#   --initdb
+#
+def initDB():
+    print()
+    print("Initializing DB Workspace...")
+    sleep(1)
+    print()
+    name=input("Name Your Workspace: ")
+    write_file="/root/.cme/workspaces/" + name
+   #if file_check(write_file) == False:
+    if os.path.exists(write_file): # If DB Workspace already found
+        print()
+        print("YOU ARE ABOUT TO ERASE ALL CREDENTIALS FROM YOUR CURRENT DB...")  # Since you only should have to init once per project...
+        double_check=input("Are you sure you want to do this? (y/N): ")     # Double check that an overwrite is really wanted
+        if not double_check.lower().rstrip() == "y": #if they don't want a db overwrite:
+            print()
+            print("Skipping DB Reinitialization...")
+            print("Close One :)")
+            sleep(1)
+            return
+    os.system("mkdir ~/.cme/workspaces/"+name+" 2>/dev/null") #Create workspace named after the FQDN
+    os.system("cp ~/.cme/cme.conf ~/.cme/cme.conf.bak 2>/dev/null") # Create conf backup
+    # Will run into problems retaining original config if this module is ran twice [FIX LATER (append timestamp?)]
+    print("Backup created: cmedb.conf.bak")
+    print()
+    sleep(1)
+    os.system("echo '[CME]' > tmp.conf") # Adding first Line (The Header) to what will be our conf file
+    os.system("echo 'workspace = " + name + "' >> tmp.conf") # Adding second line defining workspace name
+    os.system("cat ~/cmedb/cmedb.conf >> tmp.conf ") # Cat in the rest of the lines from the cmedb.conf in resources
+    os.system("cat tmp.conf > ~/.cme/cme.conf") #and overwrite current configs
+    print("Database created: " + name)
+    # Now Copy all the databases from resources to our workspace
+    os.system("cp -r ~/cmedb/* ~/.cme/workspaces/" + name + "/.")
+    sleep(1)
+
+#
+#   --spray
+#
+def SMBspray():
+    print()
+    print(" ------------------------------------")
+    print("| Spraying for Local Admin Passwords |")
+    print(" ------------------------------------")
+    print()
+    sleep(.5)
+    print("Gathering hosts to spray...")
+    sleep(1)
+    os.system("cp parser/ports/445.txt smb-hosts.txt 2>/dev/null") # moving 445 file to working dir for convenience
+    print("File created: smb-hosts.txt")
+    print()
+    sleep(1)
+    clientname=input("Client Shorthand: ")
+    print("Creating custom wordlist to spray for Local Admin creds...")
+    os.system("echo `echo '1\n!\n123\n123!\n1!\n!1' && seq 85 99 && seq 2 23 && seq 2015 2023` |tr ' ' '\n' > nums") # Create list of symbols to append
+    if not clientname==clientname.lower():
+        lowercase_clientname=clientname.lower() # This is to avoiding adding the same entry twice (if the clientname is already lowercase)
+    else:
+        lowercase_clientname=''
+    os.system('echo Password password Winter winter Summer summer Autumn autumn spring Spring Welcome welcome '+clientname+' '+lowercase_clientname+'|tr " " "\n">tmp') # create list of words to be mangled
+    os.system("4loop \"sed 's/$/LINE/g' tmp\" nums 0 > shortlist.txt") # loop over words, appending symbols to each
+    os.system('rm nums tmp 2>/dev/null') # remove tmp & symbols file
+    sleep(1)
+    print("File created: shortlist.txt")
+    print()
+    sleep(1)
+    print("Spraying SMB servers using custom wordlist...")
+    sleep(1)
+    os.system("cme smb smb-hosts.txt -u Administrator -p shortlist.txt --local-auth")
+
+#
+#   --rmi
+#
+def RMIenum():
+    print()
+    print(" ----------------------")
+    print("| Java-RMI Enumeration |")
+    print(" ----------------------")
+    print()
+    sleep(1)
+    document=results.output.rstrip()+"-servicescan.txt"
+    if os.path.exists(document):
+        print("Compiling list of hosts running java-rmi..")
+        sleep(1) 
+        os.system('cat '+str(document)+'|grep "java-rmi\\| for " |grep java-rmi -B1 |awk \'{print $1,$5}\'|sed \'s/Nmap //g\' |cut -d " " -f1 |sed \'s/\\/tcp//g\' |sed \'s/--//g\' |grep "\\S" > tttmp')
+        f=open("rmi-hosts.txt","w")
+        with open("tttmp") as a:
+            for line in a:
+                if "." in line: # if "." in the line, assume it's an ip
+                    host=line
+                else: # else assume it's the last hosts ports
+                    f.write(str(host.rstrip())+" "+str(line))
+        os.system("rm tttmp 2>/dev/null")
+        f.close()
+        print("File created: rmi-hosts.txt")
+        print()
+        sleep(1)
+        prompt=input("Do you want to continue with an RMG scan? (Y/n)")
+        if not prompt.lower()=="n":
+            os.system("rm rmg-scan.txt 2>/dev/null")
+            with open("rmi-hosts.txt") as f:
+                for line in f: # Using echo instead of print to avoid issues writing to same file as the |tee command is
+                    os.system("echo '************************' |tee -a rmg-scan.txt")
+                    os.system("echo "+line.rstrip()+"|tee -a rmg-scan.txt")
+                    os.system("echo '************************' |tee -a rmg-scan.txt")
+                    os.system("timeout --foreground 2 java -jar /usr/local/bin/rmg.jar enum " + str(line).rstrip() + " |tee -a rmg-scan.txt")
+    else:
+        print("The "+document+" file is needed for parsing")
+        print()
+        sleep(1)
+
+#
+#  --nfs
+#
+def NFSenum():
+    print()
+    print(" -----------------")
+    print("| NFS Enumeration |")
+    print(" -----------------")
+    print()
+    sleep(1)
+    # Define the regex pattern to match NFS share names
+    nfs_pattern = re.compile(r"\/\w+$")
+
+    # Define the command to show exported NFS shares
+    showmount_cmd = "showmount -e {}"
+
+    # Define the mount command
+    mount_cmd = "mount {}:{} {}"
+
+    # Define the directory to mount shares
+    mount_dir = "/mnt"
+
+    # Define the file with IP addresses
+    ip_file = "parser/ports/2049.txt"
+    if not os.path.exists(ip_file):
+        print("'"+ip_file+"' not found, skipping...")
+        sleep(2)
+        return
+    else:
+        # Define the border characters
+        border_char = "="
+
+        # Read the IP addresses from the file
+        with open(ip_file, "r") as f:
+            ip_list = [line.strip() for line in f.readlines()]
+
+        # Iterate through the IP addresses
+        for ip in ip_list:
+            print(border_char * 50)
+            print("Checking NFS shares on: ", ip)
+            print(border_char * 50)
+            # Run the showmount command to get a list of exported NFS shares
+            try:
+                showmount_output = os.popen(showmount_cmd.format(ip)).read()
+            except:
+                pass # allows for CTRL-C to skip hanging commands
+            print(showmount_output)
+            # Iterate through the output and extract the share names
+            for line in showmount_output.split("\n"):
+                match = nfs_pattern.search(line)
+                if match:
+                    share_name = match.group(0)[1:]
+                    # Check if the share is world-readable
+                    is_world_readable = os.path.exists("/proc/fs/nfsd/exports/{}".format(share_name))
+                    if is_world_readable:
+                        # Create a directory to mount the share
+                        mount_path = os.path.join(mount_dir, share_name)
+                        os.makedirs(mount_path, exist_ok=True)
+                        # Mount the share
+                        try:                            
+                            mount_output = os.popen(mount_cmd.format(ip, share_name, mount_path)).read()
+                        except:
+                            pass
+                        print(border_char * 50)
+                        print("Mounted NFS share {} on IP address {} to {}".format(share_name, ip, mount_path))
+                        print("Mount output:")
+                        print(mount_output)
+
+
+#
+# main()
+#
+def main():
+    if results.alive:
+        pingSweep()
+    if results.quickscan:
+        portScan()
+    if results.parse:
+        parse()
+    if results.servicescan:
+        serviceScan()
+    if results.eyewitness:
+        eyewitness()
+    if results.initdb:
+        initDB()
+    elif results.spray:
+        q=input("Do you want to first initialize the CME database? (y/N): ")
+        if q.lower() == "y":
+            initDB(name)
+        else:
+            pass
+    if results.spray:
+        SMBspray()
+    if results.rmi:
+        RMIenum()
+    if results.nfs:
+        NFSenum()
+
+main()
